@@ -1,25 +1,76 @@
 # Screen-recording demo checklist
 
-Record these in order; narrate each step briefly.
+Use this final recording order; narrate each step briefly.
 
-1. **Repo tour** — show folder structure + README.
-2. **Terraform**
-   - `cd infra && terraform init`
-   - `terraform plan`
-   - `terraform apply -auto-approve` → minikube starts, ingress enabled.
-   - `kubectl get nodes`
-3. **Build image** — `bash scripts/build-image.sh`
-4. **Deploy** — `kubectl apply -k manifests/overlays/local`
-   - `kubectl -n mlops get pods` → show all Running.
-5. **MLflow + pipeline**
-   - port-forward MLflow, open http://localhost:5000
-   - `python pipeline/train.py` → show run + metrics in UI
-   - show model in **Models** tab at **Staging**
-   - `python pipeline/promote.py` → refresh UI → **Production**
-   - `python pipeline/pipeline.py` → show generated `iris_pipeline.yaml`
-6. **Serving + load balancing**
-   - `bash scripts/verify-pods.sh` → 3 iris-serving pods + distribution
-   - `bash scripts/predict.sh` → JSON predictions returned
-   - hit it via Nginx ingress host `iris.local`
-7. **Jenkins** — open Jenkins, trigger build, show green stages.
-8. **Wrap** — state repo link; confirm everything live on GitHub.
+Before recording, keep these non-blocking port-forward windows open:
+
+- `kubectl -n mlops port-forward svc/mlflow 5002:5000`
+- `kubectl -n mlops port-forward svc/iris-serving 5001:5001`
+- `kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8080:80`
+
+1. Show GitHub repository structure: https://github.com/SaifSajjad/k8s-mlops-iris
+2. Show Terraform files:
+   - `infra/main.tf`
+   - `infra/providers.tf`
+   - `infra/variables.tf`
+3. Run:
+   ```powershell
+   terraform output
+   ```
+4. Run:
+   ```powershell
+   kubectl get nodes
+   ```
+5. Run:
+   ```powershell
+   kubectl -n mlops get pods -o wide
+   ```
+6. Run:
+   ```powershell
+   kubectl -n mlops get deploy
+   ```
+7. Open MLflow UI:
+   ```text
+   http://127.0.0.1:5002
+   ```
+8. Show:
+   ```text
+   iris-classifier v1 Production
+   ```
+9. Run prediction:
+   ```powershell
+   $body = Get-Content pipeline/sample_request.json -Raw
+   Invoke-WebRequest http://127.0.0.1:5001/invocations `
+     -Method POST `
+     -ContentType "application/json" `
+     -Body $body `
+     -UseBasicParsing
+   ```
+10. Show prediction:
+    ```json
+    {"predictions": [0, 2]}
+    ```
+11. Run:
+    ```powershell
+    kubectl -n mlops get ingress
+    ```
+12. Show ingress request through controller port-forward:
+    ```text
+    http://127.0.0.1:8080/predict
+    ```
+13. Show:
+    ```text
+    pipeline/iris_pipeline.yaml
+    ```
+14. Show:
+    ```text
+    jenkins/Jenkinsfile
+    ```
+15. Show:
+    ```powershell
+    git log --oneline -n 3
+    ```
+16. Show:
+    ```powershell
+    git remote -v
+    ```

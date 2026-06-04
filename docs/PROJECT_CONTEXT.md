@@ -33,10 +33,17 @@ docs/         checklist + this context + demo script
 ```
 
 ## Environment notes
-- This repo is generated in a chat sandbox; live cluster commands run on the
-  user's machine. Sandbox cannot run minikube/terraform apply/Jenkins.
-- Tooling expected on user machine: docker, minikube, kubectl, terraform,
-  python 3.10+, helm.
+- GitHub repository: https://github.com/SaifSajjad/k8s-mlops-iris
+- Runtime used for final verification: Windows PowerShell, Docker Desktop 29.5.2, Minikube v1.38.1 with 3000 MB memory, kubectl v1.34.1, Terraform v1.15.5.
+- Python venv: Python 3.11.9, MLflow 2.16.2, scikit-learn 1.5.2, kfp 2.9.0.
+- Kubernetes status: node Ready, MLflow pod `1/1 Running`, `iris-serving` deployment `3/3 Running`.
+- Serving scope: three replicas on one local Minikube node; do not describe this as multi-node distribution.
+- Model: `iris-classifier v1 Production`, `accuracy=0.9667`, `f1=0.9666`.
+- Endpoints: MLflow UI `http://127.0.0.1:5002`; serving `http://127.0.0.1:5001`; `/ping` HTTP 200; `/invocations` returns `{"predictions": [0, 2]}`.
+- Ingress: host `iris.local`, Minikube IP `192.168.49.2`, required Windows hosts entry `192.168.49.2 iris.local`. Direct Minikube IP access timed out from Windows; Nginx ingress routing was validated through `http://127.0.0.1:8080` with `/predict` and `/mlflow` returning HTTP 200.
+- Kubeflow: `pipeline/iris_pipeline.yaml` exists, compiled YAML verified, size 10,212 bytes. Heavy local Kubeflow UI installation intentionally skipped because the compiled artifact satisfies the local-first submission scope.
+- Jenkins: `jenkins/Jenkinsfile` exists. Jenkins executable/service was not installed locally; Jenkinsfile reviewed with no obvious blocking issue for a Unix/Linux-style Jenkins agent. Live Jenkins runtime execution remains a documented local limitation.
+- Git: initial GitHub push completed successfully, branch `main`, remote `https://github.com/SaifSajjad/k8s-mlops-iris.git`.
 
 ## Windows run notes (2026-06-03)
 - **Docker Desktop memory:** capped at 3613 MB → use `--memory=3000` for minikube; `infra/variables.tf` default updated to `"3000"`.
@@ -62,7 +69,7 @@ docs/         checklist + this context + demo script
 - **Handoff Phase 4 verification (2026-06-04):** No Windows hosts entry for `iris.local`; add `192.168.49.2 iris.local` from Administrator PowerShell if direct host testing is needed. Direct Minikube IP HTTP timed out from Windows, so Nginx ingress was validated through `127.0.0.1:8080` port-forward to `ingress-nginx-controller` with `Host: iris.local`. Split ingress rewrites so `/predict` maps to `/invocations`; `/predict` and `/mlflow` both returned HTTP 200.
 
 - **Handoff Phase 5 verification (2026-06-04):** Git initialized and staged for review. `.gitignore` now includes `**/secrets*` and ignores the nested duplicate `k8s-mlops-project/` directory without deleting it. Exact safety regex flags `.env.example`; inspected file contains placeholders only and refined check excluding `.env.example` passes.
+- **GitHub delivery (2026-06-04):** Local commit `2e60c37` pushed successfully to `origin/main` at `https://github.com/SaifSajjad/k8s-mlops-iris.git`.
 
 ## Next
-- Push to GitHub (`git init / add / commit / push`).
 - Record screen demo following `docs/DEMO_CHECKLIST.md`.
