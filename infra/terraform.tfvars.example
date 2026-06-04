@@ -1,0 +1,5 @@
+kube_context    = "minikube"
+namespace       = "mlops"
+minikube_cpus   = 2
+minikube_memory = "4096"
+apply_manifests = false

@@ -1,0 +1,277 @@
+# PIPELINE DEFINITION
+# Name: iris-mlops-pipeline
+# Description: preprocess -> train -> evaluate -> package
+# Outputs:
+#    evaluate-metrics: system.Metrics
+components:
+  comp-evaluate:
+    executorLabel: exec-evaluate
+    inputDefinitions:
+      artifacts:
+        model_in:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+        test_in:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        metrics:
+          artifactType:
+            schemaTitle: system.Metrics
+            schemaVersion: 0.0.1
+  comp-package:
+    executorLabel: exec-package
+    inputDefinitions:
+      artifacts:
+        model_in:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        packaged:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+  comp-preprocess:
+    executorLabel: exec-preprocess
+    outputDefinitions:
+      artifacts:
+        test_out:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        train_out:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-train:
+    executorLabel: exec-train
+    inputDefinitions:
+      artifacts:
+        train_in:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        model_out:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-evaluate:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - evaluate
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.9.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'scikit-learn==1.5.2'\
+          \ 'pandas==2.2.2' 'joblib==1.4.2' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef evaluate(model_in: dsl.Input[dsl.Model], test_in: dsl.Input[dsl.Dataset],\n\
+          \             metrics: dsl.Output[dsl.Metrics]):\n    import pandas as pd,\
+          \ joblib\n    from sklearn.metrics import accuracy_score, f1_score\n   \
+          \ clf = joblib.load(model_in.path)\n    df = pd.read_csv(test_in.path)\n\
+          \    X, y = df.drop(columns=[\"target\"]), df[\"target\"]\n    pred = clf.predict(X)\n\
+          \    metrics.log_metric(\"accuracy\", float(accuracy_score(y, pred)))\n\
+          \    metrics.log_metric(\"f1_macro\", float(f1_score(y, pred, average=\"\
+          macro\")))\n\n"
+        image: python:3.10-slim
+    exec-package:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - package
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.9.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'scikit-learn==1.5.2'\
+          \ 'pandas==2.2.2' 'joblib==1.4.2' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef package(model_in: dsl.Input[dsl.Model], packaged: dsl.Output[dsl.Model]):\n\
+          \    import shutil\n    shutil.copy(model_in.path, packaged.path)  # placeholder\
+          \ for real packaging/push\n\n"
+        image: python:3.10-slim
+    exec-preprocess:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - preprocess
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.9.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'scikit-learn==1.5.2'\
+          \ 'pandas==2.2.2' 'joblib==1.4.2' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef preprocess(train_out: dsl.Output[dsl.Dataset], test_out: dsl.Output[dsl.Dataset]):\n\
+          \    import pandas as pd\n    from sklearn.datasets import load_iris\n \
+          \   from sklearn.model_selection import train_test_split\n    X, y = load_iris(return_X_y=True,\
+          \ as_frame=True)\n    df = X.copy(); df[\"target\"] = y\n    tr, te = train_test_split(df,\
+          \ test_size=0.2, random_state=42, stratify=df[\"target\"])\n    tr.to_csv(train_out.path,\
+          \ index=False)\n    te.to_csv(test_out.path, index=False)\n\n"
+        image: python:3.10-slim
+    exec-train:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - train
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.9.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'scikit-learn==1.5.2'\
+          \ 'pandas==2.2.2' 'joblib==1.4.2' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef train(train_in: dsl.Input[dsl.Dataset], model_out: dsl.Output[dsl.Model]):\n\
+          \    import pandas as pd, joblib\n    from sklearn.linear_model import LogisticRegression\n\
+          \    df = pd.read_csv(train_in.path)\n    X, y = df.drop(columns=[\"target\"\
+          ]), df[\"target\"]\n    clf = LogisticRegression(max_iter=200).fit(X, y)\n\
+          \    joblib.dump(clf, model_out.path)\n\n"
+        image: python:3.10-slim
+pipelineInfo:
+  description: preprocess -> train -> evaluate -> package
+  name: iris-mlops-pipeline
+root:
+  dag:
+    outputs:
+      artifacts:
+        evaluate-metrics:
+          artifactSelectors:
+          - outputArtifactKey: metrics
+            producerSubtask: evaluate
+    tasks:
+      evaluate:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-evaluate
+        dependentTasks:
+        - preprocess
+        - train
+        inputs:
+          artifacts:
+            model_in:
+              taskOutputArtifact:
+                outputArtifactKey: model_out
+                producerTask: train
+            test_in:
+              taskOutputArtifact:
+                outputArtifactKey: test_out
+                producerTask: preprocess
+        taskInfo:
+          name: evaluate
+      package:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-package
+        dependentTasks:
+        - train
+        inputs:
+          artifacts:
+            model_in:
+              taskOutputArtifact:
+                outputArtifactKey: model_out
+                producerTask: train
+        taskInfo:
+          name: package
+      preprocess:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-preprocess
+        taskInfo:
+          name: preprocess
+      train:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-train
+        dependentTasks:
+        - preprocess
+        inputs:
+          artifacts:
+            train_in:
+              taskOutputArtifact:
+                outputArtifactKey: train_out
+                producerTask: preprocess
+        taskInfo:
+          name: train
+  outputDefinitions:
+    artifacts:
+      evaluate-metrics:
+        artifactType:
+          schemaTitle: system.Metrics
+          schemaVersion: 0.0.1
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.9.0

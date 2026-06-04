@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iris-serving
+  labels: { app: iris-serving }
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: iris-serving }
+  template:
+    metadata:
+      labels: { app: iris-serving }
+    spec:
+      containers:
+        - name: iris-serving
+          image: iris-serving:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: "http://mlflow:5000"
+            - name: MODEL_URI
+              value: "models:/iris-classifier/Production"
+          ports:
+            - containerPort: 5001
+          readinessProbe:
+            httpGet: { path: /ping, port: 5001 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
