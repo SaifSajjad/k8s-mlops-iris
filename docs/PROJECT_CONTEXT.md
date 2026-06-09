@@ -71,5 +71,9 @@ docs/         checklist + this context + demo script
 - **Handoff Phase 5 verification (2026-06-04):** Git initialized and staged for review. `.gitignore` now includes `**/secrets*` and ignores the nested duplicate `k8s-mlops-project/` directory without deleting it. Exact safety regex flags `.env.example`; inspected file contains placeholders only and refined check excluding `.env.example` passes.
 - **GitHub delivery (2026-06-04):** Local commit `2e60c37` pushed successfully to `origin/main` at `https://github.com/SaifSajjad/k8s-mlops-iris.git`.
 
+- **Jenkins verification pass 1 (2026-06-09):** `jenkins/Jenkinsfile` rewritten as 15-stage Windows PowerShell pipeline; Unix `sh`/`eval`/`sleep` removed; MLflow URI corrected to 5002.
+- **Jenkins verification pass 2 (2026-06-09):** Additional execution blockers fixed: `agent { label 'windows' }` added; stage 2 preflight now checks `py` launcher and `py -3.11` instead of `.venv`; stage 3 adds idempotent `minikube start/update-context/addons enable ingress`; stage 6 adds HTTP readiness loop (Invoke-WebRequest HTTP 200, 12 × 5 s); stage 7 auto-creates venv via `py -3.11 -m venv .venv` for fresh SCM workspaces; `post.always` uses `powershell(returnStatus: true, ...)` (non-blocking); `jenkins/README.md` corrected to document native Windows Jenkins (`java -jar jenkins.war`) as recommended and Linux Docker controller alone as insufficient. `docs/JENKINS_PIPELINE_VERIFICATION.md` updated. Live pipeline execution pending user approval.
+
 ## Next
+- Approve Jenkins live run to execute all 15 stages and create iris-classifier v2 (optional).
 - Record screen demo following `docs/DEMO_CHECKLIST.md`.

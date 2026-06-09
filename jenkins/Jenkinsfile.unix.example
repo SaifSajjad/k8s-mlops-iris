@@ -1,0 +1,57 @@
+// UNIX/LINUX REFERENCE — original 4-stage Jenkinsfile for a Linux/Mac Jenkins agent.
+// NOT suitable for Windows. See Jenkinsfile for the Windows PowerShell version.
+pipeline {
+  agent any
+  environment {
+    MLFLOW_TRACKING_URI = 'http://localhost:5000'
+    MODEL_NAME = 'iris-classifier'
+  }
+  stages {
+    stage('Checkout') { steps { checkout scm } }
+
+    stage('Terraform') {
+      steps {
+        dir('infra') {
+          sh 'terraform init -input=false'
+          sh 'terraform apply -auto-approve'
+        }
+      }
+    }
+
+    stage('Build serving image') {
+      steps {
+        sh '''
+          eval $(minikube docker-env)
+          docker build -t iris-serving:latest serving/
+        '''
+      }
+    }
+
+    stage('Train + Register') {
+      steps {
+        sh '''
+          kubectl -n mlops apply -k manifests/overlays/local
+          kubectl -n mlops rollout status deploy/mlflow --timeout=180s
+          kubectl -n mlops port-forward svc/mlflow 5000:5000 &
+          sleep 8
+          pip install -r pipeline/requirements.txt
+          python pipeline/train.py
+          python pipeline/promote.py
+        '''
+      }
+    }
+
+    stage('Deploy + Verify') {
+      steps {
+        sh '''
+          kubectl -n mlops rollout restart deploy/iris-serving
+          kubectl -n mlops rollout status deploy/iris-serving --timeout=180s
+          kubectl -n mlops get pods -o wide
+        '''
+      }
+    }
+  }
+  post {
+    always { sh 'kubectl -n mlops get pods -o wide || true' }
+  }
+}

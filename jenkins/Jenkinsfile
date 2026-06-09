@@ -1,55 +1,310 @@
+// Windows PowerShell Jenkins pipeline — 15-stage declarative pipeline.
+// Requires a native Windows Jenkins agent with label 'windows'.
+// Tools required on PATH: docker, minikube, kubectl, terraform, py (Python launcher).
+// Python 3.11 venv is created automatically in the workspace if missing.
+// MLflow port-forward uses 5002 because Docker Desktop occupies host port 5000.
+// For a Unix/Linux agent reference see jenkins/Jenkinsfile.unix.example
 pipeline {
-  agent any
-  environment {
-    MLFLOW_TRACKING_URI = 'http://localhost:5000'
-    MODEL_NAME = 'iris-classifier'
-  }
-  stages {
-    stage('Checkout') { steps { checkout scm } }
+  agent { label 'windows' }
 
-    stage('Terraform') {
+  environment {
+    MLFLOW_TRACKING_URI = 'http://127.0.0.1:5002'
+    MODEL_NAME          = 'iris-classifier'
+  }
+
+  stages {
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 1. Checkout / Workspace Validation
+    // ──────────────────────────────────────────────────────────────────────
+    stage('1 - Checkout') {
       steps {
-        dir('infra') {
-          sh 'terraform init -input=false'
-          sh 'terraform apply -auto-approve'
-        }
+        checkout scm
+        powershell '''
+          $required = @(
+            'jenkins\Jenkinsfile',
+            'pipeline\train.py',
+            'pipeline\promote.py',
+            'pipeline\iris_pipeline.yaml',
+            'manifests\overlays\local',
+            'serving\Dockerfile'
+          )
+          foreach ($p in $required) {
+            if (-not (Test-Path $p)) { throw "Missing required path: $p" }
+          }
+          Write-Host "Workspace validation passed."
+        '''
       }
     }
 
-    stage('Build serving image') {
+    // ──────────────────────────────────────────────────────────────────────
+    // 2. Tool Preflight
+    // Verifies host tools only. Does NOT require .venv to exist yet —
+    // the venv is created automatically in stage 7.
+    // ──────────────────────────────────────────────────────────────────────
+    stage('2 - Tool Preflight') {
       steps {
-        sh '''
-          eval $(minikube docker-env)
+        powershell '''
+          foreach ($tool in @('docker', 'minikube', 'kubectl', 'terraform')) {
+            $cmd = Get-Command $tool -ErrorAction SilentlyContinue
+            if (-not $cmd) { throw "Required tool not on PATH: $tool" }
+            Write-Host "${tool}: $($cmd.Source)"
+          }
+          $py = Get-Command py -ErrorAction SilentlyContinue
+          if (-not $py) { throw "Python launcher py.exe not found on PATH." }
+          Write-Host "py launcher: $($py.Source)"
+          & py -3.11 --version
+          if ($LASTEXITCODE -ne 0) { throw "Python 3.11 is required but not available via py -3.11." }
+          $di = docker info --format "{{.ServerVersion}}"
+          Write-Host "Docker daemon version: $di"
+        '''
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 3. Terraform Infrastructure
+    // minikube start is idempotent — safe to call when already running.
+    // update-context fixes stale kubeconfig after a host reboot.
+    // ──────────────────────────────────────────────────────────────────────
+    stage('3 - Terraform Infrastructure') {
+      steps {
+        powershell '''
+          minikube start --driver=docker --cpus=2 --memory=3000
+          minikube update-context
+          minikube addons enable ingress
+          Set-Location infra
+          terraform init -input=false
+          terraform validate
+          terraform apply -auto-approve
+        '''
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 4. Build Serving Image Inside Minikube
+    // ──────────────────────────────────────────────────────────────────────
+    stage('4 - Build Serving Image') {
+      steps {
+        powershell '''
+          & minikube -p minikube docker-env --shell powershell | Invoke-Expression
           docker build -t iris-serving:latest serving/
         '''
       }
     }
 
-    stage('Train + Register') {
+    // ──────────────────────────────────────────────────────────────────────
+    // 5. Deploy Kubernetes Manifests
+    // ──────────────────────────────────────────────────────────────────────
+    stage('5 - Deploy Kubernetes Manifests') {
       steps {
-        sh '''
-          kubectl -n mlops apply -k manifests/overlays/local
-          kubectl -n mlops rollout status deploy/mlflow --timeout=180s
-          kubectl -n mlops port-forward svc/mlflow 5000:5000 &
-          sleep 8
-          pip install -r pipeline/requirements.txt
-          python pipeline/train.py
-          python pipeline/promote.py
+        powershell '''
+          kubectl apply -k manifests/overlays/local
+          kubectl -n mlops rollout status deploy/mlflow --timeout=600s
         '''
       }
     }
 
-    stage('Deploy + Verify') {
+    // ──────────────────────────────────────────────────────────────────────
+    // 6. Start or Reuse MLflow Port-Forward (port 5002)
+    // Port 5000 is occupied by Docker Desktop on this Windows host.
+    // HTTP readiness loop polls MLflow UI for HTTP 200, up to 60 s.
+    // ──────────────────────────────────────────────────────────────────────
+    stage('6 - MLflow Port-Forward') {
       steps {
-        sh '''
-          kubectl -n mlops rollout restart deploy/iris-serving
-          kubectl -n mlops rollout status deploy/iris-serving --timeout=180s
-          kubectl -n mlops get pods -o wide
+        powershell '''
+          $pf = Get-NetTCPConnection -LocalPort 5002 -State Listen -ErrorAction SilentlyContinue
+          if (-not $pf) {
+            Start-Process -WindowStyle Hidden -FilePath 'kubectl' `
+              -ArgumentList '-n','mlops','port-forward','svc/mlflow','5002:5000'
+            Start-Sleep -Seconds 5
+            Write-Host "MLflow port-forward started => http://127.0.0.1:5002"
+          } else {
+            Write-Host "Port 5002 already listening — reusing."
+          }
+          $ready = $false
+          for ($i = 1; $i -le 12; $i++) {
+            try {
+              $resp = Invoke-WebRequest http://127.0.0.1:5002 `
+                -UseBasicParsing `
+                -TimeoutSec 5
+              if ($resp.StatusCode -eq 200) {
+                $ready = $true
+                Write-Host "MLflow HTTP readiness passed: HTTP $($resp.StatusCode) (attempt $i)."
+                break
+              }
+            } catch {
+              Write-Host "Waiting for MLflow HTTP readiness... attempt $i/12"
+            }
+            Start-Sleep -Seconds 5
+          }
+          if (-not $ready) {
+            throw "MLflow HTTP readiness failed at http://127.0.0.1:5002 after 60 seconds."
+          }
         '''
       }
     }
-  }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 7. Prepare Python Environment
+    // Creates .venv with py -3.11 if not already present (fresh Jenkins
+    // workspace has no .venv because it is gitignored).
+    // ──────────────────────────────────────────────────────────────────────
+    stage('7 - Prepare Python Environment') {
+      steps {
+        powershell '''
+          if (-not (Test-Path '.venv\Scripts\python.exe')) {
+            Write-Host "Creating Python 3.11 venv..."
+            & py -3.11 -m venv .venv
+          }
+          & .venv\Scripts\python.exe -m pip install --upgrade pip --quiet
+          & .venv\Scripts\python.exe -m pip install -r pipeline\requirements.txt
+          Write-Host "Python environment ready."
+        '''
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 8. Train and Register Model (-> Staging)
+    // ──────────────────────────────────────────────────────────────────────
+    stage('8 - Train and Register Model') {
+      steps {
+        powershell '''
+          & .venv\Scripts\python.exe pipeline/train.py
+        '''
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 9. Promote Model: Staging -> Production
+    // ──────────────────────────────────────────────────────────────────────
+    stage('9 - Promote to Production') {
+      steps {
+        powershell '''
+          & .venv\Scripts\python.exe pipeline/promote.py
+        '''
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 10. Restart Serving Deployment with Production Model
+    // ──────────────────────────────────────────────────────────────────────
+    stage('10 - Deploy Production Model') {
+      steps {
+        powershell '''
+          kubectl -n mlops rollout restart deploy/iris-serving
+          kubectl -n mlops rollout status deploy/iris-serving --timeout=600s
+        '''
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 11. Verify Kubernetes Runtime
+    // ──────────────────────────────────────────────────────────────────────
+    stage('11 - Verify Kubernetes Runtime') {
+      steps {
+        powershell '''
+          kubectl -n mlops get pods -o wide
+          kubectl -n mlops get deploy
+        '''
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 12. Serving Smoke Test (/ping + /invocations)
+    // ──────────────────────────────────────────────────────────────────────
+    stage('12 - Serving Smoke Test') {
+      steps {
+        powershell '''
+          $pf = Get-NetTCPConnection -LocalPort 5001 -State Listen -ErrorAction SilentlyContinue
+          if (-not $pf) {
+            Start-Process -WindowStyle Hidden -FilePath 'kubectl' `
+              -ArgumentList '-n','mlops','port-forward','svc/iris-serving','5001:5001'
+            Start-Sleep -Seconds 8
+          }
+          $ping = Invoke-WebRequest http://127.0.0.1:5001/ping -UseBasicParsing
+          if ($ping.StatusCode -ne 200) { throw "/ping returned HTTP $($ping.StatusCode)" }
+          Write-Host "/ping HTTP $($ping.StatusCode) OK"
+          $body = Get-Content pipeline\sample_request.json -Raw
+          $resp = Invoke-WebRequest http://127.0.0.1:5001/invocations `
+            -Method POST -ContentType 'application/json' -Body $body -UseBasicParsing
+          Write-Host "/invocations => $($resp.Content)"
+          if ($resp.Content -notmatch '"predictions"') {
+            throw "Unexpected /invocations response: $($resp.Content)"
+          }
+        '''
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 13. Nginx Ingress Verification (Host: iris.local via port-forward 8080)
+    // ──────────────────────────────────────────────────────────────────────
+    stage('13 - Nginx Ingress Verification') {
+      steps {
+        powershell '''
+          $pf = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
+          if (-not $pf) {
+            Start-Process -WindowStyle Hidden -FilePath 'kubectl' `
+              -ArgumentList '-n','ingress-nginx','port-forward',`
+                            'svc/ingress-nginx-controller','8080:80'
+            Start-Sleep -Seconds 6
+          }
+          $body = Get-Content pipeline\sample_request.json -Raw
+          $headers = @{ 'Host' = 'iris.local'; 'Content-Type' = 'application/json' }
+          $resp = Invoke-WebRequest http://127.0.0.1:8080/predict `
+            -Method POST -Headers $headers -Body $body -UseBasicParsing
+          Write-Host "Ingress /predict => $($resp.Content)"
+          if ($resp.Content -notmatch '"predictions"') {
+            throw "Ingress test failed: $($resp.Content)"
+          }
+        '''
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 14. Kubeflow Artifact Verification
+    // ──────────────────────────────────────────────────────────────────────
+    stage('14 - Kubeflow Artifact Verification') {
+      steps {
+        powershell '''
+          $yaml = 'pipeline\iris_pipeline.yaml'
+          if (-not (Test-Path $yaml)) { throw "$yaml not found." }
+          $item = Get-Item $yaml
+          Write-Host "KFP artifact: $($item.Name)  $($item.Length) bytes  $($item.LastWriteTime)"
+          if ($item.Length -lt 1000) { throw "iris_pipeline.yaml too small: $($item.Length) bytes" }
+        '''
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // 15. Success Summary + Archive KFP Artifact
+    // ──────────────────────────────────────────────────────────────────────
+    stage('15 - Success Summary') {
+      steps {
+        powershell '''
+          Write-Host ""
+          Write-Host "=================================================="
+          Write-Host " Pipeline completed successfully."
+          Write-Host " MLflow UI  : http://127.0.0.1:5002"
+          Write-Host " Serving    : http://127.0.0.1:5001/invocations"
+          Write-Host " Ingress    : http://127.0.0.1:8080/predict  (Host: iris.local)"
+          Write-Host " Model      : iris-classifier -> Production"
+          Write-Host " KFP YAML   : pipeline/iris_pipeline.yaml"
+          Write-Host "=================================================="
+          Get-Item pipeline\iris_pipeline.yaml | Select-Object Name, Length, LastWriteTime
+        '''
+        archiveArtifacts artifacts: 'pipeline/iris_pipeline.yaml', allowEmptyArchive: false
+      }
+    }
+
+  } // end stages
+
   post {
-    always { sh 'kubectl -n mlops get pods -o wide || true' }
+    always {
+      script {
+        // returnStatus: true prevents a transient kubectl failure from hiding
+        // the actual pipeline result.
+        powershell(returnStatus: true, script: 'kubectl -n mlops get pods -o wide')
+      }
+    }
   }
 }
